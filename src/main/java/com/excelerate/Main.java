@@ -148,6 +148,7 @@ public class Main {
         dataTable.getTableHeader().setForeground(Color.DARK_GRAY);
         dataTable.setSelectionBackground(new Color(232, 240, 254)); // Light blue selection
         dataTable.setSelectionForeground(Color.BLACK);
+        dataTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
 
         // Style the row number column
         dataTable.getColumnModel().getColumn(0).setPreferredWidth(50);
@@ -305,14 +306,16 @@ public class Main {
                     // Update row count label
                     rowCountLabel.setText("Total Rows: " + String.format("%,d", totalRows));
 
-                    // Auto-resize columns
+                    // Auto-resize columns with minimum and maximum widths
                     for (int column = 1; column < dataTable.getColumnCount(); column++) {
-                        int width = 100;
+                        int width = 100; // minimum width
                         for (int row = 0; row < Math.min(dataTable.getRowCount(), 100); row++) {
                             TableCellRenderer renderer = dataTable.getCellRenderer(row, column);
                             Component comp = dataTable.prepareRenderer(renderer, row, column);
                             width = Math.max(comp.getPreferredSize().width + 20, width);
                         }
+                        // Set a maximum width to prevent extremely wide columns
+                        width = Math.min(width, 300); // maximum width of 300 pixels
                         dataTable.getColumnModel().getColumn(column).setPreferredWidth(width);
                     }
                 }
