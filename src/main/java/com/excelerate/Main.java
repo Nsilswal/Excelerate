@@ -275,7 +275,7 @@ public class Main {
                     progressDialog.dispose();
                     
                     // Update row count label
-                    rowCountLabel.setText("Total Rows: " + totalRows);
+                    rowCountLabel.setText("Total Rows: " + String.format("%,d", totalRows));
 
                     // Auto-resize columns
                     for (int column = 1; column < dataTable.getColumnCount(); column++) {
