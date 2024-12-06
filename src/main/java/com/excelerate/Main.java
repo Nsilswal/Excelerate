@@ -32,7 +32,7 @@ public class Main {
     private JProgressBar progressBar;
     private static final String LOGO_PATH = "/images/logo.png";
     private static final Color BACKGROUND_COLOR = new Color(250, 250, 250);
-    private static final Color ACCENT_COLOR = new Color(66, 133, 244);  // Google Blue
+    private static final Color ACCENT_COLOR = new Color(66, 133, 244); // Google Blue
     private static final Color HEADER_COLOR = new Color(245, 245, 245);
     private static final int BORDER_RADIUS = 8;
 
@@ -96,16 +96,16 @@ public class Main {
         frame.setBackground(BACKGROUND_COLOR);
 
         // Set application icon
-        // setApplicationIcon();  // Uncomment this when you have a logo
+        setApplicationIcon();
 
         // Create modern menu bar
         JMenuBar menuBar = new JMenuBar();
         menuBar.setBackground(BACKGROUND_COLOR);
         menuBar.setBorder(new EmptyBorder(5, 5, 5, 5));
-        
+
         JMenu fileMenu = new JMenu("File");
         fileMenu.setFont(new Font("Segoe UI", Font.PLAIN, 14));
-        
+
         JMenuItem openItem = new JMenuItem("Open CSV");
         openItem.setFont(new Font("Segoe UI", Font.PLAIN, 14));
 
@@ -127,7 +127,7 @@ public class Main {
         JLabel welcomeLabel = new JLabel("Welcome to Excelerate", SwingConstants.CENTER);
         welcomeLabel.setFont(new Font("Segoe UI", Font.BOLD, 24));
         welcomeLabel.setForeground(ACCENT_COLOR);
-        
+
         JLabel subtitleLabel = new JLabel("Click File → Open CSV to get started", SwingConstants.CENTER);
         subtitleLabel.setFont(new Font("Segoe UI", Font.PLAIN, 14));
         subtitleLabel.setForeground(Color.GRAY);
@@ -175,6 +175,9 @@ public class Main {
         scrollPane.getViewport().setBackground(BACKGROUND_COLOR);
         mainPanel.add(scrollPane, BorderLayout.CENTER);
 
+        // Add this line
+        setupInfiniteScroll();
+
         // Create modern status bar
         JPanel statusBar = new JPanel(new BorderLayout());
         statusBar.setBackground(BACKGROUND_COLOR);
@@ -199,20 +202,46 @@ public class Main {
         });
     }
 
+    private void setupInfiniteScroll() {
+        scrollPane.getVerticalScrollBar().addAdjustmentListener(e -> {
+            JScrollBar scrollBar = (JScrollBar) e.getAdjustable();
+            int extent = scrollBar.getModel().getExtent();
+            int maximum = scrollBar.getModel().getMaximum();
+            int value = scrollBar.getValue();
+            
+            // If we're within 20% of the bottom, load more data
+            if (value + extent >= maximum - (maximum * 0.2)) {
+                loadNextPageIfAvailable();
+            }
+        });
+    }
+
     private void loadNextPageIfAvailable() {
         int totalPages = (int) Math.ceil((double) totalRows / rowsPerPage);
         if (currentPage < totalPages && !isLoading) {
             isLoading = true;
-            try {
-                currentPage++;
-                int offset = (currentPage - 1) * rowsPerPage;
-                dbManager.appendCSVFilePage(tableModel, offset, rowsPerPage);
-            } catch (SQLException e) {
-                showErrorDialog("Error loading next page", e);
-                currentPage--; // Revert page increment on error
-            } finally {
-                isLoading = false;
-            }
+            SwingWorker<Void, Void> worker = new SwingWorker<>() {
+                @Override
+                protected Void doInBackground() throws Exception {
+                    try {
+                        currentPage++;
+                        int offset = (currentPage - 1) * rowsPerPage;
+                        dbManager.appendCSVFilePage(tableModel, offset, rowsPerPage);
+                    } catch (SQLException e) {
+                        SwingUtilities.invokeLater(() -> {
+                            showErrorDialog("Error loading next page", e);
+                            currentPage--; // Revert page increment on error
+                        });
+                    }
+                    return null;
+                }
+
+                @Override
+                protected void done() {
+                    isLoading = false;
+                }
+            };
+            worker.execute();
         }
     }
 
@@ -220,28 +249,28 @@ public class Main {
         progressDialog = new JDialog(frame, "Loading CSV File", true);
         progressDialog.setLayout(new BorderLayout());
         progressDialog.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE);
-        
+
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBackground(BACKGROUND_COLOR);
         panel.setBorder(new EmptyBorder(20, 20, 20, 20));
-        
+
         JLabel statusLabel = new JLabel("Preparing to load file...", SwingConstants.CENTER);
         statusLabel.setFont(new Font("Segoe UI", Font.PLAIN, 14));
         panel.add(statusLabel, BorderLayout.NORTH);
-        
+
         progressBar = new JProgressBar(0, 100);
         progressBar.setPreferredSize(new Dimension(300, 5)); // Make it thinner
         progressBar.setForeground(ACCENT_COLOR);
         progressBar.setBackground(new Color(232, 240, 254));
         progressBar.setBorderPainted(false);
         progressBar.setStringPainted(false);
-        
+
         panel.add(progressBar, BorderLayout.CENTER);
         progressDialog.add(panel);
-        
+
         progressDialog.pack();
         progressDialog.setLocationRelativeTo(frame);
-        
+
         dbManager.setProgressListener((percentage, message) -> {
             SwingUtilities.invokeLater(() -> {
                 statusLabel.setText(message);
@@ -265,10 +294,10 @@ public class Main {
         int result = fileChooser.showOpenDialog(frame);
         if (result == JFileChooser.APPROVE_OPTION) {
             File selectedFile = fileChooser.getSelectedFile();
-            
+
             // Create and show progress dialog
             createProgressDialog();
-            
+
             // Use SwingWorker to load CSV in background
             SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
                 @Override
@@ -280,7 +309,7 @@ public class Main {
 
                         // Initialize database and create table first
                         dbManager.initializeCSVFile(selectedFile);
-                        
+
                         // Load the CSV data into the database
                         dbManager.loadCSVFile(selectedFile, tableModel);
 
@@ -290,7 +319,7 @@ public class Main {
 
                         // Clear existing data from the table model
                         tableModel.setRowCount(0);
-                        
+
                         // Load the first page
                         loadCurrentPage();
                     } catch (Exception e) {
@@ -302,7 +331,7 @@ public class Main {
                 @Override
                 protected void done() {
                     progressDialog.dispose();
-                    
+
                     // Update row count label
                     rowCountLabel.setText("Total Rows: " + String.format("%,d", totalRows));
 
@@ -389,7 +418,7 @@ public class Main {
         try {
             ImageIcon icon = new ImageIcon(getClass().getResource(LOGO_PATH));
             frame.setIconImage(icon.getImage());
-            
+
             // For macOS dock icon - only attempt on macOS and newer Java versions
             String osName = System.getProperty("os.name").toLowerCase();
             if (osName.contains("mac")) {
@@ -399,7 +428,7 @@ public class Main {
                     if (taskbarClass != null) {
                         Object taskbar = taskbarClass.getMethod("getTaskbar").invoke(null);
                         taskbarClass.getMethod("setIconImage", Image.class)
-                            .invoke(taskbar, icon.getImage());
+                                .invoke(taskbar, icon.getImage());
                     }
                 } catch (Exception e) {
                     // Silently fail for older Java versions or if Taskbar is not supported
