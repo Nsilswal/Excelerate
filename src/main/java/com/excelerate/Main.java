@@ -28,6 +28,7 @@ public class Main {
     private JScrollPane scrollPane;
     private JDialog progressDialog;
     private JProgressBar progressBar;
+    private static final String LOGO_PATH = "/images/logo.png";
 
     // Custom table model that shows row numbers
     private static class NumberedTableModel extends DefaultTableModel {
@@ -79,6 +80,19 @@ public class Main {
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(1024, 768);
         frame.setLocationRelativeTo(null); // Center on screen
+
+        // Set application icon
+        try {
+            ImageIcon icon = new ImageIcon(getClass().getResource(LOGO_PATH));
+            frame.setIconImage(icon.getImage());
+            
+            // For macOS dock icon
+            if (System.getProperty("os.name").toLowerCase().contains("mac")) {
+                Taskbar.getTaskbar().setIconImage(icon.getImage());
+            }
+        } catch (Exception e) {
+            System.err.println("Could not load application icon: " + e.getMessage());
+        }
 
         // Create menu bar
         JMenuBar menuBar = new JMenuBar();
