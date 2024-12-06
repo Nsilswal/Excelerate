@@ -8,6 +8,7 @@ import java.awt.*;
 import java.io.File;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
+import java.sql.SQLException;
 
 public class Main {
     private JFrame frame;
@@ -176,8 +177,9 @@ public class Main {
                 currentPage++;
                 int offset = (currentPage - 1) * rowsPerPage;
                 dbManager.appendCSVFilePage(tableModel, offset, rowsPerPage);
-            } catch (Exception e) {
+            } catch (SQLException e) {
                 showErrorDialog("Error loading next page", e);
+                currentPage--; // Revert page increment on error
             } finally {
                 isLoading = false;
             }
@@ -200,17 +202,27 @@ public class Main {
         if (result == JFileChooser.APPROVE_OPTION) {
             File selectedFile = fileChooser.getSelectedFile();
             try {
+                // Show loading indicator
+                setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+
                 // Reset the table model before loading new file
                 tableModel = new NumberedTableModel();
                 dataTable.setModel(tableModel);
 
-                // First load the CSV into database
+                // Initialize database and create table first
+                dbManager.initializeCSVFile(selectedFile);
+                
+                // Load the CSV data into the database
                 dbManager.loadCSVFile(selectedFile, tableModel);
 
-                // Initialize pagination
+                // Get total rows after data is loaded
                 totalRows = dbManager.getTotalRowCount(selectedFile);
                 currentPage = 1;
-                dbManager.initializeCSVFile(selectedFile);
+
+                // Clear existing data from the table model
+                tableModel.setRowCount(0);
+                
+                // Load the first page
                 loadCurrentPage();
 
                 // Update row count label
@@ -219,7 +231,7 @@ public class Main {
                 // Auto-resize columns
                 for (int column = 1; column < dataTable.getColumnCount(); column++) {
                     int width = 100;
-                    for (int row = 0; row < dataTable.getRowCount(); row++) {
+                    for (int row = 0; row < Math.min(dataTable.getRowCount(), 100); row++) {
                         TableCellRenderer renderer = dataTable.getCellRenderer(row, column);
                         Component comp = dataTable.prepareRenderer(renderer, row, column);
                         width = Math.max(comp.getPreferredSize().width + 20, width);
@@ -228,7 +240,16 @@ public class Main {
                 }
             } catch (Exception e) {
                 showErrorDialog("Error loading CSV file", e);
+            } finally {
+                setCursor(Cursor.getDefaultCursor());
             }
+        }
+    }
+
+    private void setCursor(Cursor cursor) {
+        frame.setCursor(cursor);
+        if (dataTable != null) {
+            dataTable.setCursor(cursor);
         }
     }
 
@@ -275,8 +296,12 @@ public class Main {
         });
     }
 
-    private void loadCurrentPage() throws Exception {
-        int offset = (currentPage - 1) * rowsPerPage;
-        dbManager.appendCSVFilePage(tableModel, offset, rowsPerPage);
+    private void loadCurrentPage() {
+        try {
+            int offset = (currentPage - 1) * rowsPerPage;
+            dbManager.appendCSVFilePage(tableModel, offset, rowsPerPage);
+        } catch (SQLException e) {
+            showErrorDialog("Error loading page", e);
+        }
     }
 }
