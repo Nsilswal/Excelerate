@@ -5,6 +5,10 @@ import java.io.*;
 import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.nio.file.*;
+import java.nio.channels.FileChannel;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import com.opencsv.CSVReader;
 import com.opencsv.exceptions.CsvValidationException;
 import com.opencsv.CSVParserBuilder;
@@ -15,15 +19,21 @@ public class DatabaseManager {
     private Connection connection;
     private static final String DB_URL = "jdbc:sqlite:csvdata.db";
     private ProgressListener progressListener;
+    private static final int DEFAULT_BATCH_SIZE = 5000;
+    private static final int LARGE_FILE_THRESHOLD = 1000000; // 1 million lines
 
     public DatabaseManager() {
         try {
             connection = DriverManager.getConnection(DB_URL);
-            // Enable foreign keys and set pragmas for better performance
+            // Enhanced performance settings
             try (Statement stmt = connection.createStatement()) {
                 stmt.execute("PRAGMA foreign_keys = ON");
                 stmt.execute("PRAGMA journal_mode = WAL");
                 stmt.execute("PRAGMA synchronous = NORMAL");
+                stmt.execute("PRAGMA cache_size = -2000"); // Use 2MB of cache
+                stmt.execute("PRAGMA temp_store = MEMORY");
+                stmt.execute("PRAGMA mmap_size = 30000000000"); // 30GB memory map
+                stmt.execute("PRAGMA page_size = 4096");
             }
         } catch (SQLException e) {
             e.printStackTrace();
@@ -50,30 +60,55 @@ public class DatabaseManager {
             .build();
     }
 
+    private long countLines(File file) throws IOException {
+        try (FileChannel channel = FileChannel.open(file.toPath(), StandardOpenOption.READ)) {
+            long fileSize = channel.size();
+            
+            // For small files, do a quick count
+            if (fileSize < 10_000_000) { // 10MB
+                try (BufferedReader reader = Files.newBufferedReader(file.toPath(), StandardCharsets.UTF_8)) {
+                    return reader.lines().count();
+                }
+            }
+            
+            // For large files, estimate based on sampling
+            long sampleSize = Math.min(fileSize, 1_000_000); // 1MB sample
+            byte[] sample = new byte[(int) sampleSize];
+            channel.read(ByteBuffer.wrap(sample));
+            
+            int lines = 0;
+            for (byte b : sample) {
+                if (b == '\n') lines++;
+            }
+            
+            // Extrapolate to full file size
+            return (lines * fileSize / sampleSize);
+        }
+    }
+
     public void initializeCSVFile(File file) throws SQLException {
-        // Drop existing table if it exists
         try (Statement stmt = connection.createStatement()) {
             stmt.execute("DROP TABLE IF EXISTS current_csv");
-        }
+            
+            // Read header row to determine columns
+            try (CSVReader reader = createCSVReader(file)) {
+                String[] headers = reader.readNext();
+                if (headers == null) {
+                    throw new SQLException("CSV file is empty");
+                }
 
-        // Read header row to determine columns
-        try (CSVReader reader = createCSVReader(file)) {
-            String[] headers = reader.readNext();
-            if (headers == null) {
-                throw new SQLException("CSV file is empty");
-            }
+                // Optimized table creation
+                StringBuilder createTableSQL = new StringBuilder(1024);
+                createTableSQL.append("CREATE TABLE current_csv (id INTEGER PRIMARY KEY AUTOINCREMENT");
+                for (String header : headers) {
+                    createTableSQL.append(",\"").append(sanitizeColumnName(header)).append("\" TEXT");
+                }
+                createTableSQL.append(")");
 
-            // Create table with dynamic columns
-            StringBuilder createTableSQL = new StringBuilder();
-            createTableSQL.append("CREATE TABLE current_csv (id INTEGER PRIMARY KEY AUTOINCREMENT");
-            for (int i = 0; i < headers.length; i++) {
-                String columnName = sanitizeColumnName(headers[i]);
-                createTableSQL.append(", ").append('"').append(columnName).append('"').append(" TEXT");
-            }
-            createTableSQL.append(")");
-
-            try (Statement stmt = connection.createStatement()) {
                 stmt.execute(createTableSQL.toString());
+                
+                // Create indexes after data load for better performance
+                stmt.execute("CREATE INDEX IF NOT EXISTS idx_csv_id ON current_csv(id)");
             }
         } catch (IOException | CsvValidationException e) {
             throw new SQLException("Error reading CSV file: " + e.getMessage());
@@ -94,76 +129,65 @@ public class DatabaseManager {
     }
 
     public void loadCSVFile(File file, DefaultTableModel model) throws SQLException {
-        try (CSVReader reader = createCSVReader(file)) {
-            String[] headers = reader.readNext();
-            if (headers == null) return;
-
-            // Count total lines for progress tracking
-            long totalLines = 0;
-            try (BufferedReader br = new BufferedReader(new FileReader(file))) {
-                while (br.readLine() != null) totalLines++;
+        try {
+            String[] headers = null;
+            try (CSVReader reader = createCSVReader(file)) {
+                headers = reader.readNext();
+                if (headers == null) return;
             }
-            totalLines--; // Subtract header row
+
+            // Count lines efficiently
+            long totalLines = countLines(file) - 1; // Subtract header
+            
+            // Determine optimal batch size based on file size
+            int batchSize = totalLines > LARGE_FILE_THRESHOLD ? DEFAULT_BATCH_SIZE * 2 : DEFAULT_BATCH_SIZE;
 
             // Set column names in the model
             for (String header : headers) {
                 model.addColumn(header);
             }
 
-            // Prepare the insert statement
-            StringBuilder insertSQL = new StringBuilder();
+            // Prepare optimized insert statement
+            StringBuilder insertSQL = new StringBuilder(1024);
             insertSQL.append("INSERT INTO current_csv (");
             for (int i = 0; i < headers.length; i++) {
-                String columnName = sanitizeColumnName(headers[i]);
-                insertSQL.append('"').append(columnName).append('"');
-                if (i < headers.length - 1) insertSQL.append(", ");
+                if (i > 0) insertSQL.append(',');
+                insertSQL.append('"').append(sanitizeColumnName(headers[i])).append('"');
             }
-            insertSQL.append(") VALUES (");
-            for (int i = 0; i < headers.length; i++) {
-                insertSQL.append("?");
-                if (i < headers.length - 1) insertSQL.append(", ");
-            }
-            insertSQL.append(")");
+            insertSQL.append(") VALUES (").append("?,".repeat(headers.length - 1)).append("?)");
 
             connection.setAutoCommit(false);
-            try (PreparedStatement pstmt = connection.prepareStatement(insertSQL.toString())) {
+            try (PreparedStatement pstmt = connection.prepareStatement(insertSQL.toString());
+                 CSVReader reader = createCSVReader(file)) {
+                
+                reader.readNext(); // Skip header
                 String[] nextLine;
                 long currentLine = 0;
-                int batchSize = 0;
-                final int BATCH_COMMIT_SIZE = 1000;
+                int batchCount = 0;
 
                 while ((nextLine = reader.readNext()) != null) {
-                    // Handle rows with fewer columns than headers
                     for (int i = 0; i < headers.length; i++) {
-                        if (i < nextLine.length) {
-                            String value = nextLine[i];
-                            value = value.replace("\r", " ").replace("\n", " ").trim();
-                            pstmt.setString(i + 1, value);
-                        } else {
-                            pstmt.setString(i + 1, "");
-                        }
+                        pstmt.setString(i + 1, i < nextLine.length ? 
+                            nextLine[i].replace("\r", " ").replace("\n", " ").trim() : "");
                     }
                     pstmt.addBatch();
-                    batchSize++;
+                    batchCount++;
                     currentLine++;
 
-                    // Execute batch every BATCH_COMMIT_SIZE rows
-                    if (batchSize >= BATCH_COMMIT_SIZE) {
+                    if (batchCount >= batchSize) {
                         pstmt.executeBatch();
                         connection.commit();
-                        batchSize = 0;
-                    }
-
-                    // Update progress
-                    if (progressListener != null) {
-                        int percentage = (int) ((currentLine * 100) / totalLines);
-                        progressListener.onProgressUpdate(percentage, 
-                            String.format("Loading row %d of %d...", currentLine, totalLines));
+                        batchCount = 0;
+                        
+                        if (progressListener != null) {
+                            int percentage = (int) ((currentLine * 100) / totalLines);
+                            progressListener.onProgressUpdate(percentage,
+                                String.format("Loading row %d of %d...", currentLine, totalLines));
+                        }
                     }
                 }
 
-                // Execute remaining batch
-                if (batchSize > 0) {
+                if (batchCount > 0) {
                     pstmt.executeBatch();
                     connection.commit();
                 }
