@@ -6,5 +6,5 @@ To run the project:
 
 ```
 mvn clean package
-java -jar target/csv-viewer-1.0-SNAPSHOT-jar-with-dependencies.jar
+java -jar target/Excelerate-1.0-SNAPSHOT-jar-with-dependencies.jar
 ```
