@@ -9,6 +9,8 @@ import java.io.File;
 import javax.swing.event.ChangeEvent;
 import javax.swing.event.ChangeListener;
 import java.sql.SQLException;
+import javax.swing.SwingWorker;
+import java.util.List;
 
 public class Main {
     private JFrame frame;
@@ -24,6 +26,8 @@ public class Main {
     private JButton nextButton;
     private boolean isLoading = false;
     private JScrollPane scrollPane;
+    private JDialog progressDialog;
+    private JProgressBar progressBar;
 
     // Custom table model that shows row numbers
     private static class NumberedTableModel extends DefaultTableModel {
@@ -186,6 +190,37 @@ public class Main {
         }
     }
 
+    private void createProgressDialog() {
+        progressDialog = new JDialog(frame, "Loading CSV File", true);
+        progressDialog.setLayout(new BorderLayout(10, 10));
+        progressDialog.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE);
+        
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        
+        // Create a label for the status text
+        JLabel statusLabel = new JLabel("Preparing to load file...", SwingConstants.CENTER);
+        panel.add(statusLabel, BorderLayout.NORTH);
+        
+        progressBar = new JProgressBar(0, 100);
+        progressBar.setStringPainted(false); // Don't show text on the progress bar
+        progressBar.setIndeterminate(false);
+        
+        panel.add(progressBar, BorderLayout.CENTER);
+        progressDialog.add(panel);
+        
+        progressDialog.setSize(300, 100); // Slightly taller to accommodate the label
+        progressDialog.setLocationRelativeTo(frame);
+        
+        // Update the progress listener to modify the label instead of the progress bar string
+        dbManager.setProgressListener((percentage, message) -> {
+            SwingUtilities.invokeLater(() -> {
+                statusLabel.setText(message);
+                progressBar.setValue(percentage);
+            });
+        });
+    }
+
     private void openCSVFile() {
         JFileChooser fileChooser = new JFileChooser();
         fileChooser.setFileFilter(new javax.swing.filechooser.FileFilter() {
@@ -201,48 +236,62 @@ public class Main {
         int result = fileChooser.showOpenDialog(frame);
         if (result == JFileChooser.APPROVE_OPTION) {
             File selectedFile = fileChooser.getSelectedFile();
-            try {
-                // Show loading indicator
-                setCursor(Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
+            
+            // Create and show progress dialog
+            createProgressDialog();
+            
+            // Use SwingWorker to load CSV in background
+            SwingWorker<Void, Integer> worker = new SwingWorker<Void, Integer>() {
+                @Override
+                protected Void doInBackground() throws Exception {
+                    try {
+                        // Reset the table model before loading new file
+                        tableModel = new NumberedTableModel();
+                        dataTable.setModel(tableModel);
 
-                // Reset the table model before loading new file
-                tableModel = new NumberedTableModel();
-                dataTable.setModel(tableModel);
+                        // Initialize database and create table first
+                        dbManager.initializeCSVFile(selectedFile);
+                        
+                        // Load the CSV data into the database
+                        dbManager.loadCSVFile(selectedFile, tableModel);
 
-                // Initialize database and create table first
-                dbManager.initializeCSVFile(selectedFile);
-                
-                // Load the CSV data into the database
-                dbManager.loadCSVFile(selectedFile, tableModel);
+                        // Get total rows after data is loaded
+                        totalRows = dbManager.getTotalRowCount(selectedFile);
+                        currentPage = 1;
 
-                // Get total rows after data is loaded
-                totalRows = dbManager.getTotalRowCount(selectedFile);
-                currentPage = 1;
-
-                // Clear existing data from the table model
-                tableModel.setRowCount(0);
-                
-                // Load the first page
-                loadCurrentPage();
-
-                // Update row count label
-                rowCountLabel.setText("Total Rows: " + totalRows);
-
-                // Auto-resize columns
-                for (int column = 1; column < dataTable.getColumnCount(); column++) {
-                    int width = 100;
-                    for (int row = 0; row < Math.min(dataTable.getRowCount(), 100); row++) {
-                        TableCellRenderer renderer = dataTable.getCellRenderer(row, column);
-                        Component comp = dataTable.prepareRenderer(renderer, row, column);
-                        width = Math.max(comp.getPreferredSize().width + 20, width);
+                        // Clear existing data from the table model
+                        tableModel.setRowCount(0);
+                        
+                        // Load the first page
+                        loadCurrentPage();
+                    } catch (Exception e) {
+                        SwingUtilities.invokeLater(() -> showErrorDialog("Error loading CSV file", e));
                     }
-                    dataTable.getColumnModel().getColumn(column).setPreferredWidth(width);
+                    return null;
                 }
-            } catch (Exception e) {
-                showErrorDialog("Error loading CSV file", e);
-            } finally {
-                setCursor(Cursor.getDefaultCursor());
-            }
+
+                @Override
+                protected void done() {
+                    progressDialog.dispose();
+                    
+                    // Update row count label
+                    rowCountLabel.setText("Total Rows: " + totalRows);
+
+                    // Auto-resize columns
+                    for (int column = 1; column < dataTable.getColumnCount(); column++) {
+                        int width = 100;
+                        for (int row = 0; row < Math.min(dataTable.getRowCount(), 100); row++) {
+                            TableCellRenderer renderer = dataTable.getCellRenderer(row, column);
+                            Component comp = dataTable.prepareRenderer(renderer, row, column);
+                            width = Math.max(comp.getPreferredSize().width + 20, width);
+                        }
+                        dataTable.getColumnModel().getColumn(column).setPreferredWidth(width);
+                    }
+                }
+            };
+
+            worker.execute();
+            progressDialog.setVisible(true);
         }
     }
 

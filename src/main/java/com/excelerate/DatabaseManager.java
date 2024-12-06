@@ -14,6 +14,7 @@ import com.opencsv.ICSVParser;
 public class DatabaseManager {
     private Connection connection;
     private static final String DB_URL = "jdbc:sqlite:csvdata.db";
+    private ProgressListener progressListener;
 
     public DatabaseManager() {
         try {
@@ -27,6 +28,10 @@ public class DatabaseManager {
         } catch (SQLException e) {
             e.printStackTrace();
         }
+    }
+
+    public void setProgressListener(ProgressListener listener) {
+        this.progressListener = listener;
     }
 
     private CSVReader createCSVReader(File file) throws IOException {
@@ -93,9 +98,16 @@ public class DatabaseManager {
             String[] headers = reader.readNext();
             if (headers == null) return;
 
+            // Count total lines for progress tracking
+            long totalLines = 0;
+            try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+                while (br.readLine() != null) totalLines++;
+            }
+            totalLines--; // Subtract header row
+
             // Set column names in the model
             for (String header : headers) {
-                model.addColumn(header); // Use original headers for display
+                model.addColumn(header);
             }
 
             // Prepare the insert statement
@@ -116,22 +128,50 @@ public class DatabaseManager {
             connection.setAutoCommit(false);
             try (PreparedStatement pstmt = connection.prepareStatement(insertSQL.toString())) {
                 String[] nextLine;
+                long currentLine = 0;
+                int batchSize = 0;
+                final int BATCH_COMMIT_SIZE = 1000;
+
                 while ((nextLine = reader.readNext()) != null) {
                     // Handle rows with fewer columns than headers
                     for (int i = 0; i < headers.length; i++) {
                         if (i < nextLine.length) {
-                            // Clean the data before inserting
                             String value = nextLine[i];
                             value = value.replace("\r", " ").replace("\n", " ").trim();
                             pstmt.setString(i + 1, value);
                         } else {
-                            pstmt.setString(i + 1, ""); // Set empty string for missing columns
+                            pstmt.setString(i + 1, "");
                         }
                     }
                     pstmt.addBatch();
+                    batchSize++;
+                    currentLine++;
+
+                    // Execute batch every BATCH_COMMIT_SIZE rows
+                    if (batchSize >= BATCH_COMMIT_SIZE) {
+                        pstmt.executeBatch();
+                        connection.commit();
+                        batchSize = 0;
+                    }
+
+                    // Update progress
+                    if (progressListener != null) {
+                        int percentage = (int) ((currentLine * 100) / totalLines);
+                        progressListener.onProgressUpdate(percentage, 
+                            String.format("Loading row %d of %d...", currentLine, totalLines));
+                    }
                 }
-                pstmt.executeBatch();
-                connection.commit();
+
+                // Execute remaining batch
+                if (batchSize > 0) {
+                    pstmt.executeBatch();
+                    connection.commit();
+                }
+
+                if (progressListener != null) {
+                    progressListener.onProgressUpdate(100, "Loading complete!");
+                }
+
             } catch (SQLException e) {
                 connection.rollback();
                 throw e;
