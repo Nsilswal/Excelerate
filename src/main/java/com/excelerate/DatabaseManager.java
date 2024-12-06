@@ -2,6 +2,7 @@ package com.excelerate;
 
 import com.opencsv.CSVReader;
 import com.opencsv.exceptions.CsvException;
+import com.opencsv.exceptions.CsvValidationException;
 
 import javax.swing.table.DefaultTableModel;
 import java.io.*;
@@ -14,8 +15,35 @@ public class DatabaseManager {
     private File currentFile;
 
     public DatabaseManager() {
+        initializeConnection();
+    }
+
+    private void initializeConnection() {
         try {
-            connection = DriverManager.getConnection(DB_URL);
+            if (connection == null || connection.isClosed()) {
+                connection = DriverManager.getConnection(DB_URL);
+                // Enable foreign keys and set other SQLite pragmas
+                try (Statement stmt = connection.createStatement()) {
+                    stmt.execute("PRAGMA foreign_keys = ON");
+                    stmt.execute("PRAGMA journal_mode = WAL");
+                }
+            }
+        } catch (SQLException e) {
+            e.printStackTrace();
+        }
+    }
+
+    private Connection getConnection() throws SQLException {
+        initializeConnection();
+        return connection;
+    }
+
+    // Add this method to properly close the connection when the application exits
+    public void closeConnection() {
+        try {
+            if (connection != null && !connection.isClosed()) {
+                connection.close();
+            }
         } catch (SQLException e) {
             e.printStackTrace();
         }
@@ -53,31 +81,72 @@ public class DatabaseManager {
         }
     }
 
-    public void loadCSVFile(File csvFile, DefaultTableModel tableModel) throws IOException, CsvException, SQLException {
-        // Read CSV file
-        try (CSVReader reader = new CSVReader(new FileReader(csvFile))) {
-            List<String[]> allRows = reader.readAll();
-            if (allRows.isEmpty()) {
-                throw new IOException("CSV file is empty");
+    public void loadCSVFile(File file, DefaultTableModel model) throws Exception {
+        try (CSVReader reader = new CSVReader(new FileReader(file))) {
+            // Read header
+            String[] header = reader.readNext();
+            if (header == null) {
+                throw new Exception("CSV file is empty");
             }
+            
+            // Create the current_csv table
+            dropTableIfExists("current_csv");
+            createTable("current_csv", header);
+            
+            // Prepare the insert statement
+            StringBuilder insertSQL = new StringBuilder();
+            insertSQL.append("INSERT INTO current_csv (");
+            for (int i = 0; i < header.length; i++) {
+                insertSQL.append(header[i].replaceAll("[^a-zA-Z0-9]", "_"));
+                if (i < header.length - 1) insertSQL.append(", ");
+            }
+            insertSQL.append(") VALUES (");
+            for (int i = 0; i < header.length; i++) {
+                insertSQL.append("?");
+                if (i < header.length - 1) insertSQL.append(", ");
+            }
+            insertSQL.append(")");
 
-            // Get headers
-            String[] headers = allRows.get(0);
+            // Insert data in batches
+            try (PreparedStatement pstmt = connection.prepareStatement(insertSQL.toString())) {
+                connection.setAutoCommit(false);
+                String[] nextLine;
+                int batchSize = 1000;
+                int count = 0;
+                
+                while ((nextLine = reader.readNext()) != null) {
+                    for (int i = 0; i < nextLine.length; i++) {
+                        pstmt.setString(i + 1, nextLine[i]);
+                    }
+                    pstmt.addBatch();
+                    
+                    if (++count % batchSize == 0) {
+                        pstmt.executeBatch();
+                        connection.commit();
+                    }
+                }
+                
+                // Execute any remaining records
+                pstmt.executeBatch();
+                connection.commit();
+                connection.setAutoCommit(true);
+            }
             
-            // Create table name from file name (sanitized)
-            String tableName = csvFile.getName().replaceAll("[^a-zA-Z0-9]", "_").toLowerCase();
+            // Update the table model with first page
+            model.setColumnCount(0);
+            model.setRowCount(0);
+            for (String columnName : header) {
+                model.addColumn(columnName);
+            }
             
-            // Drop existing table if exists
-            dropTableIfExists(tableName);
-            
-            // Create new table
-            createTable(tableName, headers);
-            
-            // Insert data
-            insertData(tableName, headers, allRows.subList(1, allRows.size()));
-            
-            // Update table model
-            updateTableModel(tableModel, headers, allRows.subList(1, allRows.size()));
+        } catch (IOException e) {
+            throw new Exception("Error reading CSV file: " + e.getMessage());
+        } catch (CsvValidationException e) {
+            throw new Exception("Invalid CSV format: " + e.getMessage());
+        } catch (SQLException e) {
+            connection.rollback();
+            connection.setAutoCommit(true);
+            throw new Exception("Database error: " + e.getMessage());
         }
     }
 
@@ -149,6 +218,35 @@ public class DatabaseManager {
         // Add rows
         for (String[] row : data) {
             tableModel.addRow(row);
+        }
+    }
+
+    public void appendCSVFilePage(DefaultTableModel model, int offset, int limit) throws Exception {
+        try (Connection conn = getConnection();
+             PreparedStatement stmt = conn.prepareStatement(
+                 "SELECT * FROM current_csv LIMIT ? OFFSET ?")) {
+            
+            stmt.setInt(1, limit);
+            stmt.setInt(2, offset);
+            
+            ResultSet rs = stmt.executeQuery();
+            ResultSetMetaData metaData = rs.getMetaData();
+            
+            // If this is the first page, set up the columns
+            if (model.getColumnCount() <= 1) { // 1 because of the row number column
+                for (int i = 1; i <= metaData.getColumnCount(); i++) {
+                    model.addColumn(metaData.getColumnName(i));
+                }
+            }
+            
+            // Add new rows to the existing model
+            while (rs.next()) {
+                Object[] row = new Object[metaData.getColumnCount()];
+                for (int i = 0; i < row.length; i++) {
+                    row[i] = rs.getObject(i + 1);
+                }
+                model.addRow(row);
+            }
         }
     }
 } 
