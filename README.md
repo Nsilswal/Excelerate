@@ -18,4 +18,4 @@ java -jar target/Excelerate-1.0-SNAPSHOT-jar-with-dependencies.jar
 
 **Design Choices:**
 
-- We use Java because its fast and has a good standard library. Python is too slow for this type of project. I originally wanted to use Rust, but that was harder to use because gui programming is not as easy.
+- We use Java because its fast and has a good standard library. Python is too slow for this type of project. I originally wanted to use Rust, but that was harder to use because GUI programming was not as easy.
