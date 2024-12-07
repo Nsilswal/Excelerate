@@ -14,7 +14,6 @@ java -jar target/Excelerate-1.0-SNAPSHOT-jar-with-dependencies.jar
 **Future Features:**
 
 - I'm currently working on a translation engine to translate complex excel commands into sql. Actions like selecting mulitple rows and calculating their average or similar.
--
 
 **Design Choices:**
 
